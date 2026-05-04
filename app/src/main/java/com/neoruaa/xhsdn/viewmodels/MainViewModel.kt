@@ -15,6 +15,7 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.ensureActive
 import com.neoruaa.xhsdn.data.TaskManager
 import com.neoruaa.xhsdn.data.TaskStatus
 import com.neoruaa.xhsdn.data.NoteType
@@ -55,6 +56,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var currentUrl: String? = null
     private var hasUserContinuedAfterVideoWarning = false
     private var downloadJob: Job? = null
+    private var currentDownloader: XHSDownloader? = null
 
     // Track individual file progress for more accurate overall progress
     private val fileProgressMap = mutableMapOf<String, Float>() // Maps file path to progress (0.0 to 1.0)
@@ -95,6 +97,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelCurrentDownload() {
         if (downloadJob?.isActive == true) {
+            // Signal the downloader to stop at the next checkpoint
+            currentDownloader?.stopDownload()
             downloadJob?.cancel()
             _uiState.update { it.copy(isDownloading = false, progressLabel = "已取消") }
             if (currentTaskId > 0) {
@@ -177,8 +181,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onError("请输入链接")
             return
         }
-        // Cancel any existing download job
-        downloadJob?.cancel()
+        // Do NOT cancel any existing download job — let the old task complete in the background
         currentUrl = targetUrl
         downloadedCount = 0
         totalMediaCount = 0
@@ -226,106 +229,87 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             val myTaskId = initialTaskId // Capture taskId locally for this coroutine
 
+            // Track completed/failed files for this task (shared between callback and completion logic)
+            val localCompletedFiles = java.util.concurrent.atomic.AtomicInteger(0)
+            val localFailedFiles = java.util.concurrent.atomic.AtomicInteger(0)
+
             val downloader = XHSDownloader(
                 getApplication(),
                 object : DownloadCallback {
+
                     override fun onFileDownloaded(filePath: String) {
-                        viewModelScope.launch(Dispatchers.Main) {
-                            if (displayedFiles.add(filePath)) {
-                                addMedia(filePath)
-                                downloadedCount++
-                                taskCompletedFiles++
-                                currentFileProgress = 0f
-                                taskCurrentFileProgress = 0f
-                                // Update task progress using local ID before updating UI progress, with throttling
-                                val currentTime = System.currentTimeMillis()
-                                if (currentTime - lastTaskProgressUpdateTime >= TASK_PROGRESS_UPDATE_INTERVAL) {
-                                    TaskManager.updateProgress(
-                                        myTaskId,
-                                        taskCompletedFiles,
-                                        taskFailedFiles,
-                                        taskCurrentFileProgress
-                                    )
-                                    lastTaskProgressUpdateTime = currentTime
+                        val completed = localCompletedFiles.incrementAndGet()
+                        // Always update TaskManager with the captured myTaskId
+                        TaskManager.updateProgress(myTaskId, completed, localFailedFiles.get(), 0f)
+                        TaskManager.addFilePath(myTaskId, filePath)
+
+                        // Only update UI if this is still the active task
+                        if (myTaskId == currentTaskId) {
+                            viewModelScope.launch(Dispatchers.Main) {
+                                if (displayedFiles.add(filePath)) {
+                                    addMedia(filePath)
+                                    downloadedCount++
+                                    taskCompletedFiles++
+                                    currentFileProgress = 0f
+                                    taskCurrentFileProgress = 0f
+                                    updateProgress()
                                 }
-                                updateProgress()
-                                TaskManager.addFilePath(myTaskId, filePath)
                             }
                         }
                     }
 
                     override fun onDownloadProgress(status: String) {
-                        appendStatus(status)
+                        if (myTaskId == currentTaskId) {
+                            appendStatus(status)
+                        }
                     }
 
                     override fun onDownloadProgressUpdate(downloaded: Long, total: Long) {
-                        // Calculate progress percentage - always update this
-                        val progressPercent = if (total > 0) {
-                            (downloaded.toDouble() / total.toDouble() * 100).toFloat()
+                        // Calculate individual file progress for TaskManager
+                        val fileProgress = if (total > 0 && downloaded >= 0) {
+                            if (downloaded <= total) downloaded.toFloat() / total.toFloat() else 1.0f
                         } else 0f
 
-                        // Calculate individual file progress (0.0 to 1.0)
-                        currentFileProgress = if (total > 0 && downloaded >= 0) {
-                            if (downloaded <= total) {
-                                // Normal case: downloaded is less than or equal to total
-                                downloaded.toFloat() / total.toFloat()
-                            } else {
-                                // Edge case: downloaded exceeds total (could happen with dynamic content)
-                                // Cap at 1.0 to prevent progress > 100%
-                                1.0f
-                            }
-                        } else {
-                            0f
-                        }
-
-                        // Update task's current file progress
-                        taskCurrentFileProgress = currentFileProgress
-
-                        // Calculate download speed more responsively
+                        // Always update TaskManager with the captured myTaskId
                         val currentTime = System.currentTimeMillis()
-                        val deltaTime = currentTime - lastSpeedCalculationTime
-
-                        // Update speed calculation more frequently for better responsiveness
-                        if (deltaTime > 500) { // Update every 0.5 seconds instead of 1 second
-                            // Prevent negative deltaBytes by ensuring downloaded is greater than or equal to currentDownloadedBytes
-                            val deltaBytes = if (downloaded >= currentDownloadedBytes) {
-                                downloaded - currentDownloadedBytes
-                            } else {
-                                // If downloaded is less than currentDownloadedBytes, it means we're tracking a different file
-                                // In this case, just use the current downloaded amount as the basis
-                                downloaded
-                            }
-
-                            val deltaTimeSec = deltaTime.toDouble() / 1000.0 // Convert to seconds
-
-                            val speedBps = if (deltaTimeSec > 0) {
-                                deltaBytes.toDouble() / deltaTimeSec
-                            } else 0.0
-
-                            // Format speed with appropriate units (KB/s or MB/s)
-                            lastCalculatedSpeed = formatSpeed(speedBps)
-                            lastSpeedCalculationTime = currentTime
-                        }
-
-                        // Update the current download stats
-                        currentDownloadedBytes = downloaded
-                        currentDownloadTotalBytes = total
-
-                        // Update overall progress
-                        updateProgress()
-
-                        // Update task progress with current file progress, with throttling
                         if (currentTime - lastTaskProgressUpdateTime >= TASK_PROGRESS_UPDATE_INTERVAL) {
                             TaskManager.updateProgress(
                                 myTaskId,
-                                taskCompletedFiles,
-                                taskFailedFiles,
-                                taskCurrentFileProgress
+                                localCompletedFiles.get(),
+                                localFailedFiles.get(),
+                                fileProgress
                             )
                             lastTaskProgressUpdateTime = currentTime
                         }
 
-                        // Always update UI state with current progress and speed
+                        // Only update UI if this is still the active task
+                        if (myTaskId != currentTaskId) return
+
+                        val progressPercent = if (total > 0) {
+                            (downloaded.toDouble() / total.toDouble() * 100).toFloat()
+                        } else 0f
+
+                        currentFileProgress = fileProgress
+                        taskCurrentFileProgress = currentFileProgress
+
+                        // Calculate download speed
+                        val deltaTime = currentTime - lastSpeedCalculationTime
+                        if (deltaTime > 500) {
+                            val deltaBytes = if (downloaded >= currentDownloadedBytes) {
+                                downloaded - currentDownloadedBytes
+                            } else {
+                                downloaded
+                            }
+                            val deltaTimeSec = deltaTime.toDouble() / 1000.0
+                            val speedBps = if (deltaTimeSec > 0) deltaBytes.toDouble() / deltaTimeSec else 0.0
+                            lastCalculatedSpeed = formatSpeed(speedBps)
+                            lastSpeedCalculationTime = currentTime
+                        }
+
+                        currentDownloadedBytes = downloaded
+                        currentDownloadTotalBytes = total
+                        updateProgress()
+
                         val progressText =
                             "${String.format("%.1f", progressPercent)}%｜$lastCalculatedSpeed"
                         _uiState.update { currentState ->
@@ -334,23 +318,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     override fun onDownloadError(status: String, originalUrl: String) {
-                        appendStatus("错误：$status ($originalUrl)")
                         if (isTerminalDownloadError(status)) {
-                            taskFailedFiles++
-                            taskCurrentFileProgress = 0f
-                            TaskManager.updateProgress(
-                                myTaskId,
-                                taskCompletedFiles,
-                                taskFailedFiles,
-                                taskCurrentFileProgress
-                            )
+                            val failed = localFailedFiles.incrementAndGet()
+                            TaskManager.updateProgress(myTaskId, localCompletedFiles.get(), failed, 0f)
                         }
-                        // 解析失败时给出网页爬取入口
-                        if (status.contains("No media URLs found", true)
-                            || status.contains("Failed to fetch post details", true)
-                            || status.contains("Could not extract post ID", true)
-                        ) {
-                            _uiState.update { it.copy(showWebCrawl = true) }
+                        // Only update UI if this is still the active task
+                        if (myTaskId == currentTaskId) {
+                            appendStatus("错误：$status ($originalUrl)")
+                            if (status.contains("No media URLs found", true)
+                                || status.contains("Failed to fetch post details", true)
+                                || status.contains("Could not extract post ID", true)
+                            ) {
+                                _uiState.update { it.copy(showWebCrawl = true) }
+                            }
                         }
                     }
 
@@ -389,6 +369,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             )
 
+            // Store reference so cancelCurrentDownload() can signal this downloader
+            currentDownloader = downloader
+
             // If user has continued after video warning, don't stop on video detection
             if (hasUserContinuedAfterVideoWarning) {
                 downloader.setShouldStopOnVideo(false)
@@ -400,23 +383,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val success = runDownloadWithCancellationCheck(downloader, targetUrl, currentJob)
 
-                withContext(Dispatchers.Main) {
-                    // Only proceed if this coroutine is still active (not cancelled)
-                    if (isActive) {
-                        _uiState.update { it.copy(isDownloading = false) }
+                // Always update TaskManager with the final result
+                val finalCompleted = localCompletedFiles.get()
+                val finalFailed = localFailedFiles.get()
+                
+                // A task is only truly successful if success is true AND there are no failed files
+                val isStrictSuccess = success && finalFailed == 0 && finalCompleted > 0
+                
+                // Generate a descriptive error message if not strictly successful
+                val errorMsg = when {
+                    isStrictSuccess -> null
+                    !success -> "解析或下载中断"
+                    finalCompleted == 0 -> "未发现可下载资源"
+                    finalFailed > 0 -> "部分下载失败 ($finalFailed)"
+                    else -> "下载过程异常"
+                }
+                
+                TaskManager.completeTask(myTaskId, isStrictSuccess, errorMsg)
 
-                        if (!success || taskCompletedFiles == 0 || taskFailedFiles > 0) {
-                            val errorMessage = if (taskCompletedFiles > 0 && taskFailedFiles > 0) {
-                                "部分文件下载失败"
-                            } else {
-                                "下载过程出错"
-                            }
-                            TaskManager.completeTask(myTaskId, false, errorMessage)
-                            appendStatus(if (taskFailedFiles > 0) "部分文件下载失败" else "下载失败")
-                        } else {
-                            TaskManager.completeTask(myTaskId, true)
-                            appendStatus("✅ 下载完成")
+                // Only update UI if this is still the active task
+                if (myTaskId == currentTaskId) {
+                    withContext(Dispatchers.Main) {
+                        _uiState.update { it.copy(isDownloading = false) }
+                        val uiStatus = when {
+                            isStrictSuccess -> "✅ 下载完成"
+                            finalFailed > 0 && finalCompleted > 0 -> "⚠️ 部分下载失败 ($finalFailed)"
+                            else -> "❌ 下载失败"
                         }
+                        appendStatus(uiStatus)
                     }
                 }
             } catch (e: Exception) {
@@ -435,16 +429,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } finally {
                 withContext(Dispatchers.Main) {
-                    // Reset download tracking when download completes (success or failure)
-                    resetDownloadTracking()
-                    // Reset global currentTaskId only if it matches ours
+                    // Only reset UI-related state if this is still the active task
                     if (currentTaskId == myTaskId) {
+                        resetDownloadTracking()
                         currentTaskId = 0
+                        taskCompletedFiles = 0
+                        taskFailedFiles = 0
+                        hasUserContinuedAfterVideoWarning = false
+                        currentDownloader = null
                     }
-                    taskCompletedFiles = 0
-                    taskFailedFiles = 0
-                    // Reset the flag after download completes (whether successful or not)
-                    hasUserContinuedAfterVideoWarning = false
                 }
             }
         }
@@ -569,15 +562,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val success = downloader.downloadContent(targetUrl)
                 withContext(Dispatchers.Main) {
-                    if (success && taskCompletedFiles > 0 && taskFailedFiles == 0) {
-                        TaskManager.completeTask(myTaskId, true)
-                    } else {
-                        val errorMessage = if (taskCompletedFiles > 0 && taskFailedFiles > 0) {
-                            "部分文件下载失败"
-                        } else {
-                            "下载过程出错"
+                    val isStrictSuccess = success && taskCompletedFiles > 0 && taskFailedFiles == 0
+                    
+                    val errorMsg = when {
+                        isStrictSuccess -> null
+                        !success -> "解析或下载中断"
+                        taskCompletedFiles == 0 -> "未发现可下载资源"
+                        taskFailedFiles > 0 -> "部分下载失败 ($taskFailedFiles)"
+                        else -> "下载过程异常"
+                    }
+                    
+                    TaskManager.completeTask(myTaskId, isStrictSuccess, errorMsg)
+                    
+                    if (myTaskId == currentTaskId) {
+                        val uiStatus = when {
+                            isStrictSuccess -> "✅ 下载完成"
+                            taskFailedFiles > 0 && taskCompletedFiles > 0 -> "⚠️ 部分下载失败 ($taskFailedFiles)"
+                            else -> "❌ 下载失败"
                         }
-                        TaskManager.completeTask(myTaskId, false, errorMessage)
+                        appendStatus(uiStatus)
                     }
                 }
             } catch (e: CancellationException) {
@@ -973,6 +976,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
         }
+
+        // If the job was cancelled, throw a CancellationException to jump to the catch block.
+        // This prevents the caller from incorrectly marking the task as "FAILED" with a generic error message.
+        // Using ensureActive() is the standard way to check for cancellation and throw the exception.
+        job?.ensureActive()
 
         return result
     }
