@@ -77,6 +77,12 @@
 
     <!-- Download option strings -->
     <string name="create_live_photos_desc">關閉後 Live Photo 將作為圖片+影片分別下載</string>
+    <string name="selective_download">選擇性下載</string>
+    <string name="selective_download_desc">先快取媒體，再選擇要儲存的內容</string>
+    <string name="selective_download_caching">正在快取媒體...</string>
+    <string name="selective_download_ready">已選擇 %1$d/%2$d</string>
+    <string name="selective_download_saving">正在儲存選中內容...</string>
+    <string name="selective_download_error">選擇性下載失敗</string>
     <string name="debug_notifications">調試通知</string>
     <string name="debug_notifications_desc">顯示詳細的下載調試資訊</string>
     <string name="keep_screen_on">保持螢幕常亮</string>

@@ -14,6 +14,7 @@ import android.util.Log;
 import androidx.annotation.RequiresApi;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -111,6 +112,98 @@ public class FileDownloader {
 
     public boolean downloadFile(String url, String fileName, String timestamp) {
         return downloadFile(url, fileName, timestamp, true);
+    }
+
+    public File downloadFileToDirectory(String url, String fileName, String timestamp, File destinationDir) {
+        try {
+            if (destinationDir == null) {
+                return null;
+            }
+            if (!destinationDir.exists() && !destinationDir.mkdirs()) {
+                Log.e(TAG, "Failed to create cache directory: " + destinationDir.getAbsolutePath());
+                return null;
+            }
+
+            Log.d(TAG, "on downloadFileToDirectory: " + fileName);
+            Request request = new Request.Builder()
+                    .url(url)
+                    .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+                    .addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=1.0,image/avif,image/webp,image/apng,*/*;q=1.0")
+                    .addHeader("Referer", "https://www.xiaohongshu.com/")
+                    .build();
+
+            activeCall = httpClient.newCall(request);
+            try (Response response = activeCall.execute()) {
+                ResponseBody responseBody = response.body();
+                if (!response.isSuccessful() || responseBody == null) {
+                    Log.e(TAG, "Cache download failed. Response code: " + response.code());
+                    return null;
+                }
+
+                String contentType = response.header("Content-Type", "");
+                if (isNonMediaContentType(contentType)) {
+                    Log.e(TAG, "Rejecting non-media cache response. Content-Type: " + contentType + ", url: " + url);
+                    return null;
+                }
+
+                String fileExtension = getFileExtension(response, url);
+                String baseFileName = fileName;
+                int lastDotIndex = fileName.lastIndexOf('.');
+                if (lastDotIndex > 0 && lastDotIndex < fileName.length() - 1) {
+                    baseFileName = fileName.substring(0, lastDotIndex);
+                }
+
+                String fullFileName = "xhs_" + baseFileName + "." + fileExtension;
+                String uniqueFileName = getUniqueFileName(destinationDir, fullFileName);
+                File destinationFile = new File(destinationDir, uniqueFileName);
+
+                try (InputStream inputStream = responseBody.byteStream();
+                     OutputStream outputStream = new FileOutputStream(destinationFile)) {
+                    writeStreamWithCancellation(inputStream, outputStream, responseBody.contentLength());
+                }
+
+                if (destinationFile.exists() && destinationFile.length() > 0) {
+                    Log.d(TAG, "Downloaded cache file: " + destinationFile.getAbsolutePath());
+                    if (callback != null) {
+                        callback.onFileDownloaded(destinationFile.getAbsolutePath());
+                    }
+                    return destinationFile;
+                }
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "Error caching file: " + e.getMessage());
+            e.printStackTrace();
+        } catch (SecurityException e) {
+            Log.e(TAG, "Security exception while caching file: " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        return null;
+    }
+
+    public File copyCachedFileToMediaStore(File sourceFile) {
+        if (sourceFile == null || !sourceFile.exists()) {
+            return null;
+        }
+
+        String fileExtension = getFileExtensionFromName(sourceFile.getName());
+        File destinationFile = null;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            destinationFile = saveExistingFileToMediaStore(sourceFile, sourceFile.getName(), fileExtension);
+        }
+
+        if (destinationFile == null) {
+            destinationFile = copyCachedFileToFileSystem(sourceFile, fileExtension);
+        }
+
+        if (destinationFile != null && destinationFile.exists()) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || isFileInPrivateDirectory(destinationFile)) {
+                notifyMediaStore(destinationFile);
+            }
+            return destinationFile;
+        }
+        return null;
     }
 
     public boolean downloadFile(String url, String fileName, String timestamp, boolean notifyErrors) {
@@ -304,6 +397,83 @@ public class FileDownloader {
         
         return null; // Return null if MediaStore save failed
     }
+
+    @RequiresApi(api = Build.VERSION_CODES.Q)
+    private File saveExistingFileToMediaStore(File sourceFile, String fileName, String fileExtension) {
+        try {
+            ContentResolver contentResolver = context.getContentResolver();
+
+            Uri collectionUri;
+            String relativePath;
+            if (isImageFile(fileExtension)) {
+                collectionUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                relativePath = Environment.DIRECTORY_PICTURES + File.separator + "xhsdn";
+            } else if (isVideoFile(fileExtension)) {
+                collectionUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+                relativePath = Environment.DIRECTORY_MOVIES + File.separator + "xhsdn";
+            } else {
+                collectionUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                relativePath = Environment.DIRECTORY_DOWNLOADS + File.separator + "xhsdn";
+            }
+
+            deleteExistingFilesInMediaStore(contentResolver, collectionUri, fileName, relativePath);
+
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+            values.put(MediaStore.MediaColumns.MIME_TYPE, getMimeTypeForFileExtension(fileExtension));
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath);
+            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+
+            Uri uri = contentResolver.insert(collectionUri, values);
+            if (uri != null) {
+                try {
+                    try (InputStream inputStream = new FileInputStream(sourceFile);
+                         OutputStream outputStream = contentResolver.openOutputStream(uri)) {
+                        if (outputStream != null) {
+                            writeStreamWithCancellation(inputStream, outputStream, sourceFile.length());
+                        }
+                    }
+
+                    ContentValues finalizeValues = new ContentValues();
+                    finalizeValues.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                    contentResolver.update(uri, finalizeValues, null, null);
+
+                    File mediaStoreFile = buildMediaStoreFile(relativePath, fileName);
+                    if (mediaStoreFile.exists()) {
+                        return mediaStoreFile;
+                    }
+
+                    File fileFromUri = getFileFromUri(uri);
+                    if (fileFromUri != null && fileFromUri.exists()) {
+                        return fileFromUri;
+                    }
+
+                    return mediaStoreFile;
+                } catch (java.util.concurrent.CancellationException e) {
+                    try {
+                        contentResolver.delete(uri, null, null);
+                    } catch (Exception deleteEx) {
+                        Log.e(TAG, "Error deleting MediaStore entry after cancellation: " + deleteEx.getMessage());
+                    }
+                    throw e;
+                } catch (IOException e) {
+                    Log.e(TAG, "Error copying cached file to MediaStore: " + e.getMessage());
+                    try {
+                        contentResolver.delete(uri, null, null);
+                    } catch (Exception deleteEx) {
+                        Log.e(TAG, "Error deleting partial MediaStore entry: " + deleteEx.getMessage());
+                    }
+                }
+            }
+        } catch (java.util.concurrent.CancellationException e) {
+            throw e;
+        } catch (Exception e) {
+            Log.e(TAG, "Error saving cached file to MediaStore: " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        return null;
+    }
     
     /**
      * Save file to filesystem (fallback for older Android versions or MediaStore failures)
@@ -382,6 +552,41 @@ public class FileDownloader {
             }
             throw e; // Re-throw to propagate cancellation
         }
+    }
+
+    private File copyCachedFileToFileSystem(File sourceFile, String fileExtension) {
+        try {
+            File destinationDir;
+            if (isVideoFile(fileExtension)) {
+                destinationDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "xhsdn");
+            } else if (isImageFile(fileExtension)) {
+                destinationDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "xhsdn");
+            } else {
+                destinationDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "xhsdn");
+            }
+
+            if (!destinationDir.exists() && !destinationDir.mkdirs()) {
+                destinationDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "xhsdn");
+                if (!destinationDir.exists()) {
+                    destinationDir.mkdirs();
+                }
+            }
+
+            File destinationFile = new File(destinationDir, sourceFile.getName());
+            if (destinationFile.exists()) {
+                destinationFile.delete();
+            }
+
+            try (InputStream inputStream = new FileInputStream(sourceFile);
+                 OutputStream outputStream = new FileOutputStream(destinationFile)) {
+                writeStreamWithCancellation(inputStream, outputStream, sourceFile.length());
+            }
+            return destinationFile;
+        } catch (IOException e) {
+            Log.e(TAG, "Error copying cached file to filesystem: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return null;
     }
 
 /**
@@ -605,6 +810,17 @@ public class FileDownloader {
         
         // If all else fails, try to guess based on URL structure
         return "jpg"; // Default to image format
+    }
+
+    private String getFileExtensionFromName(String fileName) {
+        if (fileName == null) {
+            return "jpg";
+        }
+        int dotIndex = fileName.lastIndexOf('.');
+        if (dotIndex >= 0 && dotIndex < fileName.length() - 1) {
+            return fileName.substring(dotIndex + 1).toLowerCase();
+        }
+        return "jpg";
     }
     
     /**

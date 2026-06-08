@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import com.neoruaa.xhsdn.utils.UrlUtils
 import androidx.compose.foundation.layout.padding
@@ -102,10 +103,12 @@ import androidx.compose.ui.platform.LocalConfiguration
 import com.kyant.capsule.ContinuousRoundedRectangle
 import com.neoruaa.xhsdn.ui.TabRowDefaults
 import com.neoruaa.xhsdn.ui.TabRowWithContour
+import com.neoruaa.xhsdn.ui.SelectableMediaWaterfall
 import com.neoruaa.xhsdn.viewmodels.MainUiState
 import com.neoruaa.xhsdn.viewmodels.MainViewModel
 import com.neoruaa.xhsdn.viewmodels.MediaItem
 import com.neoruaa.xhsdn.viewmodels.MediaType
+import com.neoruaa.xhsdn.viewmodels.SelectiveDownloadPhase
 import top.yukonga.miuix.kmp.basic.DropdownImpl
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
@@ -118,8 +121,13 @@ import androidx.compose.ui.text.font.FontWeight
 import com.neoruaa.xhsdn.ui.rememberOffsetPopupPositionProvider
 import kotlinx.coroutines.awaitCancellation
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.icon.extended.File
 import top.yukonga.miuix.kmp.icon.extended.Link
+import top.yukonga.miuix.kmp.icon.extended.Close
+import top.yukonga.miuix.kmp.icon.extended.Download
+import top.yukonga.miuix.kmp.icon.extended.Ok
+import top.yukonga.miuix.kmp.window.WindowBottomSheet
 
 // 缩略图内存缓存（最多缓存 50 张缩略图）
 private val thumbnailCache = object : LruCache<String, ImageBitmap>(50) {}
@@ -163,7 +171,13 @@ class MainActivity : ComponentActivity() {
                      if (url.isNotEmpty()) {
                         viewModel.updateUrl(url)
                         ensureStoragePermission { 
-                            viewModel.startDownload { showToast(it) } 
+                            val selectiveDownload = getSharedPreferences("XHSDownloaderPrefs", MODE_PRIVATE)
+                                .getBoolean("selective_download", false)
+                            if (selectiveDownload) {
+                                viewModel.startSelectiveDownload { showToast(it) }
+                            } else {
+                                viewModel.startDownload { showToast(it) }
+                            }
                         }
                      }
                      _autoDownloadIntentUrl.value = null // 消费完毕
@@ -175,12 +189,15 @@ class MainActivity : ComponentActivity() {
             val prefs = remember { context.getSharedPreferences("XHSDownloaderPrefs", MODE_PRIVATE) }
             var detectedXhsLink by remember { mutableStateOf<String?>(null) }
             var manualInputLinks by remember { mutableStateOf(prefs.getBoolean("manual_input_links", false)) }
+            var selectiveDownload by remember { mutableStateOf(prefs.getBoolean("selective_download", false)) }
 
             // 监听SharedPreferences变化，确保UI能够实时响应设置更改
             LaunchedEffect(Unit) {
                 val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
                     if (key == "manual_input_links") {
                         manualInputLinks = prefs.getBoolean("manual_input_links", false)
+                    } else if (key == "selective_download") {
+                        selectiveDownload = prefs.getBoolean("selective_download", false)
                     } else if (key == "keep_screen_on") {
                         if (prefs.getBoolean("keep_screen_on", false)) {
                             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -232,7 +249,11 @@ class MainActivity : ComponentActivity() {
                                 Log.d("XHS_Debug", "Triggering Auto Download")
                                 
                                 // Trigger Download
-                                viewModel.startDownload { showToast(it) }
+                                if (selectiveDownload) {
+                                    viewModel.startSelectiveDownload { showToast(it) }
+                                } else {
+                                    viewModel.startDownload { showToast(it) }
+                                }
                                 
                                 // Show Notification with Full Content
                                 com.neoruaa.xhsdn.utils.NotificationHelper.showDownloadNotification(
@@ -331,18 +352,22 @@ class MainActivity : ComponentActivity() {
                                 if (UrlUtils.isXhsLink(url)) {
                                     viewModel.updateUrl(clipText)
 
-                                    // 先开始下载（创建任务）
-                                    viewModel.startDownload { showToast(it) }
+                                    if (selectiveDownload) {
+                                        viewModel.startSelectiveDownload { showToast(it) }
+                                    } else {
+                                        // 先开始下载（创建任务）
+                                        viewModel.startDownload { showToast(it) }
 
-                                    // 然后获取笔记文案并保存到刚创建的任务中
-                                    viewModel.copyDescription(
-                                        onResult = { _ ->
-                                            // 文案已保存到任务中
-                                        },
-                                        onError = { _ ->
-                                            // 即使获取文案失败，也不影响下载
-                                        }
-                                    )
+                                        // 然后获取笔记文案并保存到刚创建的任务中
+                                        viewModel.copyDescription(
+                                            onResult = { _ ->
+                                                // 文案已保存到任务中
+                                            },
+                                            onError = { _ ->
+                                                // 即使获取文案失败，也不影响下载
+                                            }
+                                        )
+                                    }
                                 } else {
                                     showToast(getString(R.string.clipboard_no_xhs_link))
                                 }
@@ -428,21 +453,28 @@ class MainActivity : ComponentActivity() {
                     onManualInputDownload = { inputLink ->
                         ensureStoragePermission {
                             viewModel.updateUrl(inputLink)
-                            viewModel.startDownload { showToast(it) }
+                            if (selectiveDownload) {
+                                viewModel.startSelectiveDownload { showToast(it) }
+                            } else {
+                                viewModel.startDownload { showToast(it) }
 
-                            // 获取笔记文案
-                            viewModel.copyDescription(
-                                onResult = { _ ->
-                                    // 文案已保存到任务中
-                                },
-                                onError = { _ ->
-                                    // 即使获取文案失败，也不影响下载
-                                }
-                            )
+                                // 获取笔记文案
+                                viewModel.copyDescription(
+                                    onResult = { _ ->
+                                        // 文案已保存到任务中
+                                    },
+                                    onError = { _ ->
+                                        // 即使获取文案失败，也不影响下载
+                                    }
+                                )
+                            }
                         }
                     },
                     detectedXhsLink = detectedXhsLink,
-                    onDismissPrompt = { detectedXhsLink = null }
+                    onDismissPrompt = { detectedXhsLink = null },
+                    onCancelSelectiveDownload = viewModel::cancelSelectiveDownload,
+                    onSaveSelectedMedia = { viewModel.saveSelectedMedia { showToast(it) } },
+                    onToggleSelectiveItem = viewModel::toggleSelectiveItem
                 )
             }
         }
@@ -633,7 +665,10 @@ private fun MainScreen(
     onManualInputDownload: (String) -> Unit,
     scrollBehavior: ScrollBehavior,
     detectedXhsLink: String?,
-    onDismissPrompt: () -> Unit
+    onDismissPrompt: () -> Unit,
+    onCancelSelectiveDownload: () -> Unit,
+    onSaveSelectedMedia: () -> Unit,
+    onToggleSelectiveItem: (String) -> Unit
 ) {
     val topBarState = rememberTopAppBarState()
     val miuixScrollBehavior = MiuixScrollBehavior(state = topBarState)
@@ -706,7 +741,6 @@ private fun MainScreen(
                                 }
                             }
                         }
-
                         // 清除历史记录确认对话框
                         if (showClearHistoryDialog) {
                             WindowDialog(
@@ -778,6 +812,128 @@ private fun MainScreen(
                     .padding(padding),
                 nestedScrollConnection = miuixScrollBehavior.nestedScrollConnection
             )
+        }
+
+        SelectiveDownloadSheet(
+            uiState = uiState,
+            onCancel = onCancelSelectiveDownload,
+            onSave = onSaveSelectedMedia,
+            onToggleItem = onToggleSelectiveItem
+        )
+    }
+}
+
+@Composable
+private fun SelectiveDownloadSheet(
+    uiState: MainUiState,
+    onCancel: () -> Unit,
+    onSave: () -> Unit,
+    onToggleItem: (String) -> Unit
+) {
+    val selectiveState = uiState.selectiveDownload
+    val canSave = selectiveState.phase == SelectiveDownloadPhase.Ready &&
+        selectiveState.selectedPaths.isNotEmpty()
+
+    WindowBottomSheet(
+        show = selectiveState.show,
+        title = stringResource(R.string.selective_download),
+        allowDismiss = false,
+        onDismissRequest = {},
+        backgroundColor = MiuixTheme.colorScheme.surface,
+        startAction = {
+            IconButton(onClick = onCancel) {
+                Icon(
+                    imageVector = MiuixIcons.Close,
+                    contentDescription = stringResource(R.string.cancel),
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        },
+        endAction = {
+            IconButton(
+                onClick = onSave,
+                enabled = canSave
+            ) {
+                Icon(
+                    imageVector = MiuixIcons.Download,
+                    contentDescription = stringResource(R.string.download_button),
+                    modifier = Modifier.size(26.dp),
+                    tint = if (canSave) MiuixTheme.colorScheme.primary else Color.Gray
+                )
+            }
+        }
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(bottom = 20.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = when (selectiveState.phase) {
+                            SelectiveDownloadPhase.Caching -> stringResource(R.string.selective_download_caching)
+                            SelectiveDownloadPhase.Ready -> stringResource(
+                                R.string.selective_download_ready,
+                                selectiveState.selectedPaths.size,
+                                selectiveState.items.size
+                            )
+                            SelectiveDownloadPhase.Saving -> stringResource(R.string.selective_download_saving)
+                            SelectiveDownloadPhase.Error -> selectiveState.errorMessage ?: stringResource(R.string.selective_download_error)
+                            SelectiveDownloadPhase.Idle -> ""
+                        },
+                        fontWeight = FontWeight.Medium
+                    )
+                    if (selectiveState.phase == SelectiveDownloadPhase.Caching ||
+                        selectiveState.phase == SelectiveDownloadPhase.Saving
+                    ) {
+                        LinearProgressIndicator(
+                            progress = selectiveState.progress.coerceIn(0f, 1f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(ContinuousRoundedRectangle(3.dp))
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = selectiveState.progressLabel.ifBlank { "0/?" },
+                                fontSize = 12.sp,
+                                color = Color.Gray
+                            )
+                            Text(
+                                text = selectiveState.progressText,
+                                fontSize = 12.sp,
+                                color = Color.Gray
+                            )
+                        }
+                    }
+//                    if (selectiveState.status.isNotBlank() &&
+//                        selectiveState.phase != SelectiveDownloadPhase.Ready
+//                    ) {
+//                        Text(
+//                            text = selectiveState.status,
+//                            fontSize = 12.sp,
+//                            color = Color.Gray,
+//                            maxLines = 2,
+//                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+//                        )
+//                    }
+                }
+            }
+
+            if (selectiveState.phase == SelectiveDownloadPhase.Ready && selectiveState.items.isNotEmpty()) {
+                item {
+                    SelectableMediaWaterfall(
+                        items = selectiveState.items,
+                        selectedPaths = selectiveState.selectedPaths,
+                        onToggle = onToggleItem
+                    )
+                }
+            }
         }
     }
 }

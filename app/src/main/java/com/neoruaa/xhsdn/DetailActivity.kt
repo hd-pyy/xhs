@@ -93,6 +93,7 @@ import top.yukonga.miuix.kmp.icon.extended.MoreCircle
 import top.yukonga.miuix.kmp.icon.extended.Play
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import com.neoruaa.xhsdn.ui.DetailMediaWaterfall
 import com.neoruaa.xhsdn.ui.rememberOffsetPopupPositionProvider
 import top.yukonga.miuix.kmp.basic.DropdownImpl
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
@@ -425,7 +426,7 @@ private fun FilesPage(
             }
         } else {
             item(span = StaggeredGridItemSpan.FullLine) {
-                MediaWaterfall(
+                DetailMediaWaterfall(
                     mediaItems = uiState.mediaItems,
                     onMediaClick = onMediaClick,
                     onDeleteMedia = onDeleteMedia

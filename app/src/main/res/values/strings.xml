@@ -77,6 +77,12 @@
 
     <!-- Download option strings -->
     <string name="create_live_photos_desc">Live Photos will be saved as image+video separately when disabled</string>
+    <string name="selective_download">Selective Download</string>
+    <string name="selective_download_desc">Cache media first, then choose which items to save</string>
+    <string name="selective_download_caching">Caching media...</string>
+    <string name="selective_download_ready">%1$d/%2$d selected</string>
+    <string name="selective_download_saving">Saving selected media...</string>
+    <string name="selective_download_error">Selective download failed</string>
     <string name="debug_notifications">Debug Notifications</string>
     <string name="debug_notifications_desc">Show detailed download debugging information</string>
     <string name="keep_screen_on">Keep Screen On</string>

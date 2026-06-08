@@ -38,6 +38,9 @@ public class XHSDownloader {
     private OkHttpClient httpClient;
     private FileDownloader fileDownloader;
     private List<String> downloadUrls;
+    private boolean cacheDestinationMode = false;
+    private File cacheDestinationDir;
+    private final List<CachedMediaFile> cachedMediaFiles = new ArrayList<>();
     
     // Regex patterns for URL matching
     private static final Pattern XHS_LINK_PATTERN = Pattern.compile("(?:https?://)?www\\.xiaohongshu\\.com/explore/\\S+");
@@ -118,6 +121,28 @@ public class XHSDownloader {
             this.downloadCallback = callback;
         }
         this.fileDownloader = new FileDownloader(this.context, this.downloadCallback);
+    }
+
+    public static class CachedMediaFile {
+        public final String path;
+        public final String displayName;
+
+        public CachedMediaFile(String path, String displayName) {
+            this.path = path;
+            this.displayName = displayName;
+        }
+    }
+
+    public static class SelectiveDownloadResult {
+        public final boolean success;
+        public final String noteUrl;
+        public final List<CachedMediaFile> files;
+
+        public SelectiveDownloadResult(boolean success, String noteUrl, List<CachedMediaFile> files) {
+            this.success = success;
+            this.noteUrl = noteUrl;
+            this.files = new ArrayList<>(files);
+        }
     }
     
     public boolean downloadFile(String url, String filename) {
@@ -412,6 +437,22 @@ public class XHSDownloader {
         }
     }
 
+    public SelectiveDownloadResult downloadContentToCache(String inputUrl, File cacheDir) {
+        cacheDestinationMode = true;
+        cacheDestinationDir = cacheDir;
+        cachedMediaFiles.clear();
+        if (cacheDestinationDir != null && !cacheDestinationDir.exists()) {
+            cacheDestinationDir.mkdirs();
+        }
+        try {
+            boolean success = downloadContent(inputUrl);
+            return new SelectiveDownloadResult(success, inputUrl, cachedMediaFiles);
+        } finally {
+            cacheDestinationMode = false;
+            cacheDestinationDir = null;
+        }
+    }
+
     private boolean downloadFileWithRetries(String mediaUrl, String filename, String timestamp) {
         String originalUrl = urlMapping.get(mediaUrl);
         if (TextUtils.isEmpty(originalUrl)) {
@@ -429,7 +470,16 @@ public class XHSDownloader {
                     return false;
                 }
 
-                boolean success = fileDownloader.downloadFile(candidateUrl, filename, timestamp, false);
+                boolean success;
+                if (cacheDestinationMode) {
+                    File cachedFile = fileDownloader.downloadFileToDirectory(candidateUrl, filename, timestamp, cacheDestinationDir);
+                    success = cachedFile != null && cachedFile.exists();
+                    if (success) {
+                        cachedMediaFiles.add(new CachedMediaFile(cachedFile.getAbsolutePath(), cachedFile.getName()));
+                    }
+                } else {
+                    success = fileDownloader.downloadFile(candidateUrl, filename, timestamp, false);
+                }
                 if (success) {
                     if (!candidateUrl.equals(mediaUrl)) {
                         Log.d(TAG, "Download succeeded via fallback URL: " + candidateUrl);
@@ -1981,13 +2031,17 @@ public class XHSDownloader {
                     continue; // Skip to next live photo pair
                 }
 
-                // Always use MediaStore directory with "xhsdn" subfolder for consistent location
                 File destinationDir;
-                File publicPicturesDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES);
-                if (publicPicturesDir != null) {
-                    destinationDir = new File(publicPicturesDir, "xhsdn");
+                if (cacheDestinationMode && cacheDestinationDir != null) {
+                    destinationDir = cacheDestinationDir;
                 } else {
-                    destinationDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES);
+                    // Always use MediaStore directory with "xhsdn" subfolder for consistent location
+                    File publicPicturesDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES);
+                    if (publicPicturesDir != null) {
+                        destinationDir = new File(publicPicturesDir, "xhsdn");
+                    } else {
+                        destinationDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES);
+                    }
                 }
 
                 if (!destinationDir.exists()) {
@@ -2010,6 +2064,9 @@ public class XHSDownloader {
                         // Notify the callback that the live photo has been downloaded
                         if (downloadCallback != null) {
                             downloadCallback.onFileDownloaded(livePhotoFile.getAbsolutePath());
+                        }
+                        if (cacheDestinationMode) {
+                            cachedMediaFiles.add(new CachedMediaFile(livePhotoFile.getAbsolutePath(), livePhotoFile.getName()));
                         }
                         Log.d(TAG, "Successfully created live photo: " + livePhotoFile.getAbsolutePath());
 

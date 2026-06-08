@@ -83,6 +83,7 @@ data class SettingsUiState(
     val template: TextFieldValue = TextFieldValue(NamingFormat.DEFAULT_TEMPLATE),
     val tokens: List<NamingFormat.TokenDefinition> = emptyList(),
     val debugNotificationEnabled: Boolean = false,
+    val selectiveDownload: Boolean = false,
     val keepScreenOn: Boolean = false,
     val showClipboardBubble: Boolean = true,
     val autoReadClipboard: Boolean = false,
@@ -104,6 +105,7 @@ class SettingsViewModel(private val prefs: SharedPreferences) : ViewModel() {
             template = NamingFormat.DEFAULT_TEMPLATE
         }
         val debugNotificationEnabled = prefs.getBoolean("debug_notification_enabled", false)
+        val selectiveDownload = prefs.getBoolean("selective_download", false)
         val keepScreenOn = prefs.getBoolean("keep_screen_on", false)
         val showClipboardBubble = prefs.getBoolean("show_clipboard_bubble", true) // Default true
         val autoReadClipboard = prefs.getBoolean("auto_read_clipboard", false)
@@ -114,6 +116,7 @@ class SettingsViewModel(private val prefs: SharedPreferences) : ViewModel() {
             template = TextFieldValue(template),
             tokens = NamingFormat.getAvailableTokens(),
             debugNotificationEnabled = debugNotificationEnabled,
+            selectiveDownload = selectiveDownload,
             keepScreenOn = keepScreenOn,
             showClipboardBubble = showClipboardBubble,
             autoReadClipboard = autoReadClipboard,
@@ -155,6 +158,12 @@ class SettingsViewModel(private val prefs: SharedPreferences) : ViewModel() {
         }
     }
 
+    fun onSelectiveDownloadChange(enabled: Boolean) = updateState {
+        it.copy(selectiveDownload = enabled).also { newState ->
+            persist(newState)
+        }
+    }
+
     fun onKeepScreenOnChange(enabled: Boolean) = updateState {
         it.copy(keepScreenOn = enabled).also { newState ->
             persist(newState)
@@ -186,6 +195,7 @@ class SettingsViewModel(private val prefs: SharedPreferences) : ViewModel() {
             .putBoolean("use_custom_naming_format", state.useCustomNaming)
             .putString("custom_naming_template", state.template.text.ifBlank { NamingFormat.DEFAULT_TEMPLATE })
             .putBoolean("debug_notification_enabled", state.debugNotificationEnabled)
+            .putBoolean("selective_download", state.selectiveDownload)
             .putBoolean("keep_screen_on", state.keepScreenOn)
             .putBoolean("show_clipboard_bubble", state.showClipboardBubble)
             .putBoolean("auto_read_clipboard", state.autoReadClipboard)
@@ -254,6 +264,7 @@ class SettingsActivity : ComponentActivity() {
                     onTemplateChange = viewModel::onTemplateChange,
                     onResetTemplate = viewModel::onResetTemplate,
                     onDebugNotificationChange = viewModel::onDebugNotificationChange,
+                    onSelectiveDownloadChange = viewModel::onSelectiveDownloadChange,
                     onKeepScreenOnChange = viewModel::onKeepScreenOnChange,
                     onShowClipboardBubbleChange = viewModel::onShowClipboardBubbleChange,
                     onAutoReadClipboardChange = viewModel::onAutoReadClipboardChange,
@@ -289,6 +300,7 @@ private fun SettingsScreen(
     onTemplateChange: (TextFieldValue) -> Unit,
     onResetTemplate: () -> Unit,
     onDebugNotificationChange: (Boolean) -> Unit,
+    onSelectiveDownloadChange: (Boolean) -> Unit,
     onKeepScreenOnChange: (Boolean) -> Unit,
     onShowClipboardBubbleChange: (Boolean) -> Unit,
     onAutoReadClipboardChange: (Boolean) -> Unit,
@@ -345,6 +357,13 @@ private fun SettingsScreen(
                         description = stringResource(R.string.create_live_photos_desc),
                         checked = uiState.createLivePhotos,
                         onCheckedChange = onCreateLivePhotosChange
+                    )
+
+                    MiuixSwitchWidget(
+                        title = stringResource(R.string.selective_download),
+                        description = stringResource(R.string.selective_download_desc),
+                        checked = uiState.selectiveDownload,
+                        onCheckedChange = onSelectiveDownloadChange
                     )
 
                     MiuixSwitchWidget(

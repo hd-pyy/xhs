@@ -23,10 +23,12 @@ import com.neoruaa.xhsdn.data.NoteType
 import kotlinx.coroutines.CancellationException
 import android.util.Log
 import com.neoruaa.xhsdn.DownloadCallback
+import com.neoruaa.xhsdn.FileDownloader
 import com.neoruaa.xhsdn.R
 import com.neoruaa.xhsdn.XHSDownloader
 import com.neoruaa.xhsdn.data.DownloadTask
 import com.neoruaa.xhsdn.utils.NotificationHelper
+import java.io.File
 
 
 data class MediaItem(val path: String, val type: MediaType)
@@ -34,6 +36,31 @@ data class MediaItem(val path: String, val type: MediaType)
 enum class MediaType {
     IMAGE, VIDEO, OTHER
 }
+
+enum class SelectiveDownloadPhase {
+    Idle, Caching, Ready, Saving, Error
+}
+
+data class CachedMediaItem(
+    val path: String,
+    val displayName: String,
+    val type: MediaType
+)
+
+data class SelectiveDownloadUiState(
+    val show: Boolean = false,
+    val phase: SelectiveDownloadPhase = SelectiveDownloadPhase.Idle,
+    val progress: Float = 0f,
+    val progressLabel: String = "",
+    val progressText: String = "0.0%｜0KB/s",
+    val status: String = "",
+    val items: List<CachedMediaItem> = emptyList(),
+    val selectedPaths: Set<String> = emptySet(),
+    val noteUrl: String = "",
+    val noteContent: String? = null,
+    val cacheDir: String? = null,
+    val errorMessage: String? = null
+)
 
 data class MainUiState(
     val urlInput: String = "",
@@ -44,7 +71,8 @@ data class MainUiState(
     val progress: Float = 0f,
     val downloadProgressText: String = "0%｜0kb/s", // Format: "XX%｜XXXkb/s"
     val showWebCrawl: Boolean = false,
-    val showVideoWarning: Boolean = false
+    val showVideoWarning: Boolean = false,
+    val selectiveDownload: SelectiveDownloadUiState = SelectiveDownloadUiState()
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -172,6 +200,231 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: Exception) {
                 appendStatus("读取剪贴板失败: ${e.message}")
+            }
+        }
+    }
+
+    fun startSelectiveDownload(onError: (String) -> Unit) {
+        val targetUrl = _uiState.value.urlInput.trim()
+        if (targetUrl.isEmpty()) {
+            onError("请输入链接")
+            return
+        }
+
+        currentUrl = targetUrl
+        currentTaskId = 0
+        downloadedCount = 0
+        totalMediaCount = 0
+        displayedFiles.clear()
+        resetDownloadTracking()
+
+        val selectiveCacheRoot = File(getApplication<Application>().cacheDir, "selective_download")
+        cleanupSelectiveCache(selectiveCacheRoot.absolutePath)
+        val sessionDir = File(selectiveCacheRoot, System.currentTimeMillis().toString())
+
+        _uiState.update {
+            it.copy(
+                isDownloading = true,
+                status = listOf("缓存中：$targetUrl"),
+                mediaItems = emptyList(),
+                progressLabel = "",
+                progress = 0f,
+                showWebCrawl = false,
+                showVideoWarning = false,
+                selectiveDownload = SelectiveDownloadUiState(
+                    show = true,
+                    phase = SelectiveDownloadPhase.Caching,
+                    status = "正在缓存媒体",
+                    noteUrl = targetUrl,
+                    cacheDir = sessionDir.absolutePath
+                )
+            )
+        }
+
+        downloadJob = viewModelScope.launch(Dispatchers.IO) {
+            val downloader = XHSDownloader(
+                getApplication(),
+                createSelectiveCacheCallback(this)
+            )
+            currentDownloader = downloader
+            downloader.setShouldStopOnVideo(false)
+            downloader.resetStopDownload()
+
+            try {
+                totalMediaCount = runCatching { XHSDownloader(getApplication()).getMediaCount(targetUrl) }
+                    .getOrElse { 0 }
+                updateSelectiveProgress()
+
+                val result = downloader.downloadContentToCache(targetUrl, sessionDir)
+                coroutineContext[Job]?.ensureActive()
+
+                val noteContent = runCatching {
+                    XHSDownloader(getApplication(), null).getNoteDescription(targetUrl)
+                }.getOrNull()
+
+                withContext(Dispatchers.Main) {
+                    val existingItems = _uiState.value.selectiveDownload.items
+                    val resultItems = result.files.map {
+                        CachedMediaItem(it.path, it.displayName, detectMediaType(it.path))
+                    }
+                    val mergedItems = (existingItems + resultItems)
+                        .distinctBy { it.path }
+                    if (result.success && mergedItems.isNotEmpty()) {
+                        _uiState.update { state ->
+                            state.copy(
+                                selectiveDownload = state.selectiveDownload.copy(
+                                    phase = SelectiveDownloadPhase.Ready,
+                                    progress = 1f,
+                                    progressLabel = "${mergedItems.size}/${mergedItems.size}",
+                                    progressText = "100.0%｜0KB/s",
+                                    status = "缓存完成",
+                                    items = mergedItems,
+                                    selectedPaths = mergedItems.map { it.path }.toSet(),
+                                    noteContent = noteContent
+                                )
+                            )
+                        }
+                    } else {
+                        _uiState.update { state ->
+                            state.copy(
+                                selectiveDownload = state.selectiveDownload.copy(
+                                    phase = SelectiveDownloadPhase.Error,
+                                    status = "缓存失败",
+                                    errorMessage = "未缓存到可选择的媒体"
+                                )
+                            )
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                cleanupSelectiveCache(sessionDir.absolutePath)
+                withContext(NonCancellable + Dispatchers.Main) {
+                    resetSelectiveDownloadState()
+                }
+            } catch (e: Exception) {
+                withContext(NonCancellable + Dispatchers.Main) {
+                    _uiState.update { state ->
+                        state.copy(
+                            isDownloading = true,
+                            selectiveDownload = state.selectiveDownload.copy(
+                                phase = SelectiveDownloadPhase.Error,
+                                status = "缓存出错",
+                                errorMessage = e.message ?: "未知错误"
+                            )
+                        )
+                    }
+                }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main) {
+                    if (_uiState.value.selectiveDownload.phase == SelectiveDownloadPhase.Caching) {
+                        _uiState.update { it.copy(isDownloading = false) }
+                    }
+                    currentDownloader = null
+                }
+            }
+        }
+    }
+
+    fun cancelSelectiveDownload() {
+        val cacheDir = _uiState.value.selectiveDownload.cacheDir
+        currentDownloader?.stopDownload()
+        downloadJob?.cancel()
+        cleanupSelectiveCache(cacheDir)
+        resetSelectiveDownloadState()
+    }
+
+    fun toggleSelectiveItem(path: String) {
+        _uiState.update { state ->
+            val selected = state.selectiveDownload.selectedPaths
+            val nextSelected = if (selected.contains(path)) {
+                selected - path
+            } else {
+                selected + path
+            }
+            state.copy(
+                selectiveDownload = state.selectiveDownload.copy(
+                    selectedPaths = nextSelected
+                )
+            )
+        }
+    }
+
+    fun saveSelectedMedia(onError: (String) -> Unit) {
+        val selectiveState = _uiState.value.selectiveDownload
+        val selectedItems = selectiveState.items.filter { selectiveState.selectedPaths.contains(it.path) }
+        if (selectiveState.phase != SelectiveDownloadPhase.Ready || selectedItems.isEmpty()) {
+            onError("请选择要下载的内容")
+            return
+        }
+
+        _uiState.update { state ->
+            state.copy(
+                selectiveDownload = state.selectiveDownload.copy(
+                    phase = SelectiveDownloadPhase.Saving,
+                    progress = 0f,
+                    progressLabel = "0/${selectedItems.size}",
+                    progressText = "0.0%｜0KB/s",
+                    status = "正在保存选中内容"
+                )
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val taskId = TaskManager.createTask(
+                noteUrl = selectiveState.noteUrl,
+                noteTitle = extractTitleFromUrl(selectiveState.noteUrl),
+                noteType = if (selectedItems.any { it.type == MediaType.VIDEO }) NoteType.VIDEO else NoteType.IMAGE,
+                totalFiles = selectedItems.size,
+                noteContent = selectiveState.noteContent
+            )
+            TaskManager.startTask(taskId)
+
+            val saver = FileDownloader(getApplication(), null)
+            val savedPaths = mutableListOf<String>()
+            var failedCount = 0
+
+            selectedItems.forEachIndexed { index, item ->
+                val savedFile = runCatching {
+                    saver.copyCachedFileToMediaStore(File(item.path))
+                }.getOrNull()
+                if (savedFile != null && savedFile.exists()) {
+                    savedPaths.add(savedFile.absolutePath)
+                    TaskManager.addFilePath(taskId, savedFile.absolutePath)
+                } else {
+                    failedCount++
+                }
+
+                val completed = savedPaths.size
+                TaskManager.updateProgress(taskId, completed, failedCount, 0f)
+                withContext(Dispatchers.Main) {
+                    val progress = (index + 1) / selectedItems.size.toFloat()
+                    _uiState.update { state ->
+                        state.copy(
+                            selectiveDownload = state.selectiveDownload.copy(
+                                progress = progress,
+                                progressLabel = "${index + 1}/${selectedItems.size}",
+                                progressText = "${String.format("%.1f", progress * 100)}%｜0KB/s"
+                            )
+                        )
+                    }
+                }
+            }
+
+            val success = savedPaths.isNotEmpty() && failedCount == 0
+            TaskManager.completeTask(
+                taskId,
+                success,
+                when {
+                    success -> null
+                    savedPaths.isNotEmpty() -> "部分文件保存失败 ($failedCount)"
+                    else -> "保存失败"
+                }
+            )
+
+            cleanupSelectiveCache(selectiveState.cacheDir)
+            withContext(Dispatchers.Main) {
+                resetSelectiveDownloadState()
+                appendStatus(if (success) "✅ 已保存选中内容" else "⚠️ 部分内容保存失败")
             }
         }
     }
@@ -597,6 +850,144 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun resetVideoWarning() {
         _uiState.update { it.copy(showVideoWarning = false) }
         hasUserContinuedAfterVideoWarning = false
+    }
+
+    private fun createSelectiveCacheCallback(scope: kotlinx.coroutines.CoroutineScope): DownloadCallback {
+        return object : DownloadCallback {
+            override fun onFileDownloaded(filePath: String) {
+                if (displayedFiles.add(filePath)) {
+                    downloadedCount++
+                    currentFileProgress = 0f
+                    scope.launch(Dispatchers.Main) {
+                        val item = CachedMediaItem(
+                            path = filePath,
+                            displayName = File(filePath).name,
+                            type = detectMediaType(filePath)
+                        )
+                        _uiState.update { state ->
+                            state.copy(
+                                selectiveDownload = state.selectiveDownload.copy(
+                                    items = state.selectiveDownload.items + item
+                                )
+                            )
+                        }
+                        updateSelectiveProgress()
+                    }
+                }
+            }
+
+            override fun onDownloadProgress(status: String) {
+                scope.launch(Dispatchers.Main) {
+                    _uiState.update { state ->
+                        state.copy(
+                            selectiveDownload = state.selectiveDownload.copy(status = status)
+                        )
+                    }
+                    appendStatus(status)
+                }
+            }
+
+            override fun onDownloadProgressUpdate(downloaded: Long, total: Long) {
+                val fileProgress = if (total > 0) downloaded.toFloat() / total else 0f
+                val progressPercent = if (total > 0) (downloaded.toFloat() / total * 100) else 0f
+                val currentTime = System.currentTimeMillis()
+
+                scope.launch(Dispatchers.Main) {
+                    currentFileProgress = fileProgress
+
+                    if (currentTime - lastSpeedCalculationTime >= 500) {
+                        val deltaBytes = if (downloaded >= currentDownloadedBytes) downloaded - currentDownloadedBytes else downloaded
+                        val deltaTimeSec = (currentTime - lastSpeedCalculationTime).toDouble() / 1000.0
+                        val speedBps = if (deltaTimeSec > 0) deltaBytes / deltaTimeSec else 0.0
+                        lastCalculatedSpeed = formatSpeed(speedBps)
+                        lastSpeedCalculationTime = currentTime
+                    }
+                    currentDownloadedBytes = downloaded
+                    currentDownloadTotalBytes = total
+                    updateSelectiveProgress()
+
+                    _uiState.update { state ->
+                        state.copy(
+                            selectiveDownload = state.selectiveDownload.copy(
+                                progressText = "${String.format("%.1f", progressPercent)}%｜$lastCalculatedSpeed"
+                            )
+                        )
+                    }
+                }
+            }
+
+            override fun onDownloadError(status: String, originalUrl: String) {
+                scope.launch(Dispatchers.Main) {
+                    appendStatus("错误：$status ($originalUrl)")
+                    _uiState.update { state ->
+                        state.copy(
+                            selectiveDownload = state.selectiveDownload.copy(
+                                status = status,
+                                errorMessage = status
+                            )
+                        )
+                    }
+                }
+            }
+
+            override fun onVideoDetected() {
+                scope.launch(Dispatchers.Main) {
+                    appendStatus("检测到视频文件，继续缓存...")
+                }
+            }
+
+            override fun isCancelled(): Boolean = !scope.isActive
+        }
+    }
+
+    private fun updateSelectiveProgress() {
+        val label = if (totalMediaCount > 0) {
+            "$downloadedCount/$totalMediaCount"
+        } else {
+            "$downloadedCount/?"
+        }
+        val calculatedProgress = if (totalMediaCount > 0) {
+            (downloadedCount + currentFileProgress) / totalMediaCount.toFloat()
+        } else {
+            0f
+        }
+        val overallProgress = maxOf(calculatedProgress, lastOverallProgress)
+        lastOverallProgress = overallProgress
+
+        _uiState.update { state ->
+            state.copy(
+                progressLabel = label,
+                progress = overallProgress,
+                selectiveDownload = state.selectiveDownload.copy(
+                    progressLabel = label,
+                    progress = overallProgress
+                )
+            )
+        }
+    }
+
+    private fun resetSelectiveDownloadState() {
+        _uiState.update {
+            it.copy(
+                isDownloading = false,
+                progressLabel = "",
+                progress = 0f,
+                downloadProgressText = "0.0%｜0KB/s",
+                selectiveDownload = SelectiveDownloadUiState()
+            )
+        }
+        resetDownloadTracking()
+        displayedFiles.clear()
+        downloadedCount = 0
+        totalMediaCount = 0
+        currentDownloader = null
+        downloadJob = null
+    }
+
+    private fun cleanupSelectiveCache(cacheDir: String?) {
+        if (!cacheDir.isNullOrEmpty()) {
+            runCatching { File(cacheDir).deleteRecursively() }
+        }
     }
 
     private fun addMedia(filePath: String) {
