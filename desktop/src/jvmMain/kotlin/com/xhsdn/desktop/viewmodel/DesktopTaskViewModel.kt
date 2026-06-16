@@ -36,8 +36,44 @@ class DesktopTaskViewModel {
     private val _isDownloading = MutableStateFlow(false)
     val isDownloading: StateFlow<Boolean> = _isDownloading.asStateFlow()
 
+    /**
+     * 全局 Tab 选中态。让 HistoryScreen 能切换到 HomeScreen 去触发再次解析。
+     * 状态在这里而不是 App 里,是因为 Compose 的 [rememberDesktopTaskViewModel]
+     * 在多次 [remember] 时会拿到同一个实例(单 ViewModel = 共享 Tab 状态)。
+     */
+    private val _selectedTab = MutableStateFlow(NavTab.HOME)
+    val selectedTab: StateFlow<NavTab> = _selectedTab.asStateFlow()
+
+    fun selectTab(tab: NavTab) {
+        _selectedTab.value = tab
+    }
+
     fun setUrl(url: String) {
         _urlInput.value = url
+    }
+
+    /**
+     * 删除单条任务历史。仅移除记录，不会触碰已下载到磁盘的文件。
+     */
+    fun deleteTask(taskId: Long) {
+        scope.launch { taskManager.deleteTask(taskId) }
+    }
+
+    /**
+     * 从历史里取指定任务的 URL 后:
+     *  1. 把 URL 写回 HomeScreen 输入框(用户能看到,方便对照)
+     *  2. 切到 HomeScreen 标签
+     *  3. 自动触发一次下载 — 用户从历史里点「重新解析」的本意就是要再下一遍。
+     */
+    fun retryFromHistory(taskId: Long) {
+        scope.launch {
+            val url = taskManager.tasks.value.firstOrNull { it.id == taskId }?.noteUrl
+            if (!url.isNullOrBlank()) {
+                _urlInput.value = url
+                _selectedTab.value = NavTab.HOME
+                startDownload()
+            }
+        }
     }
 
     fun startDownload() {
@@ -89,3 +125,6 @@ class DesktopTaskViewModel {
 
 @Composable
 fun rememberDesktopTaskViewModel(): DesktopTaskViewModel = remember { DesktopTaskViewModel() }
+
+/** 桌面端底部 Tab 枚举。提到 ViewModel 同包是为了跨 Screen 共享 Tab 状态。 */
+enum class NavTab { HOME, HISTORY, SETTINGS }
