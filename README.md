@@ -47,19 +47,28 @@ XHS_Downloader_Android/
 
 ### 打包 .exe / .msi
 
-```bash
-# 产物在 desktop/build/compose/binaries/main/app/xhsdn/
-#  入口：xhsdn/xhsdn.exe
-./gradlew :desktop:createDistributable
+由于 Claude Code 自动模式会拦截触发 `jpackage.exe` 的命令，所以**打包必须在你的 PowerShell 里手动跑**：
 
-# 完整安装包（含 JRE），约 80-120 MB
-./gradlew :desktop:packageDistribution
+```powershell
+$env:JAVA_HOME = 'C:\Program Files (x86)\Android\openjdk\jdk-17.0.8.101-hotspot'
+$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+
+cd C:\Users\17651\Desktop\code\XHS_Downloader_Android
+.\gradlew.bat :desktop:createDistributable
 ```
 
-**已知打包问题**：Compose Desktop 1.7.3 在某些环境下，task `createDistributable`
-会清空 `desktop/build/compose/tmp/createDistributable/libs/` 但 jpackage 又从同一目录读 jar，
-导致 `Input length = 1` 失败。`desktop/build.gradle.kts` 末尾的 `stageJarsForJpackage`
-task 已处理这个问题（每次打包前自动从 `build/libs` 复制一份到 staging 目录）。
+产物路径：
+
+```
+desktop\build\compose\binaries\main\app\xhsdn\xhsdn.exe
+```
+
+**为什么不用 `./gradlew :desktop:packageDistribution`？** Compose Desktop 1.7.3 的内置
+`createDistributable` 有一个 bug：它会清空 `build/compose/tmp/createDistributable/libs/`
+但 jpackage 又从同一目录读 jar，导致 `Input length = 1` 失败。
+`desktop/build.gradle.kts` 末尾注册了一个自定义 `xhsPackageExe` Exec task 接管这步
+（直接调 `jpackage.exe`，不用 Compose 插件的 staging），并 hook 到
+`createDistributable` 上。所以你只要跑上面那条命令即可。
 
 ### 桌面端默认路径
 - **图片**：`%USERPROFILE%\Pictures\xhsdn\`

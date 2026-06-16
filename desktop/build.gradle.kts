@@ -49,11 +49,54 @@ compose.desktop {
 
 // Compose Desktop 1.7.3 在打包前会清空 build/compose/tmp/createDistributable/libs/
 // 但后续 jpackage 又从这个目录读 jar，导致 "Input length = 1" 失败。
-// 用 staging task 在 createDistributable 前把 jar 复制进去。
+// 直接接管：用我们自己的 Exec task 调 jpackage，绕开 Compose 插件的 staging。
 afterEvaluate {
-    val stageJarsForJpackage = tasks.register<Copy>("stageJarsForJpackage") {
-        from(layout.buildDirectory.dir("libs"))
-        into(layout.buildDirectory.dir("compose/tmp/createDistributable/libs"))
+    val packageExe = tasks.register<Exec>("xhsPackageExe") {
+        group = "compose desktop"
+        description = "使用 jpackage 直接打包 Windows .exe（绕过 Compose Desktop 1.7.3 staging bug）"
+        dependsOn("jar", "createRuntimeImage")
+
+        val stagingDir = layout.buildDirectory.dir("compose/staging/xhsdn")
+        val appDir = layout.buildDirectory.dir("compose/binaries/main/app/xhsdn")
+        val runtimeDir = layout.buildDirectory.dir("compose/tmp/main/runtime")
+        val jar = layout.buildDirectory.file("libs/desktop.jar")
+
+        inputs.dir(runtimeDir).withPropertyName("runtimeDir")
+            .withPathSensitivity(PathSensitivity.RELATIVE)
+        inputs.file(jar).withPropertyName("jar")
+            .withPathSensitivity(PathSensitivity.NONE)
+        outputs.dir(appDir).withPropertyName("appDir")
+
+        doFirst {
+            val s = stagingDir.get().asFile
+            s.deleteRecursively()
+            s.mkdirs()
+            jar.get().asFile.copyTo(File(s, jar.get().asFile.name))
+
+            val javaHome = System.getenv("JAVA_HOME")
+                ?: error("JAVA_HOME must be set before running this task")
+            val jpackage = File(javaHome, "bin/jpackage.exe")
+            require(jpackage.exists()) { "jpackage.exe not found at $jpackage" }
+
+            setExecutable(jpackage.absolutePath as String)
+            setArgs(listOf(
+                "--input", s.absolutePath,
+                "--runtime-image", runtimeDir.get().asFile.absolutePath,
+                "--main-jar", jar.get().asFile.name,
+                "--main-class", "com.xhsdn.desktop.MainKt",
+                "--type", "app-image",
+                "--dest", layout.buildDirectory.dir("compose/binaries/main/app").get().asFile.absolutePath,
+                "--name", "xhsdn",
+                "--description", "XHS Downloader - Windows 桌面版",
+                "--app-version", "1.0.0",
+                "--java-options", "-Dcompose.application.resources.dir=\$APPDIR\\resources",
+                "--java-options", "-Dcompose.application.configure.swing.globals=true",
+                "--java-options", "-Dskiko.library.path=\$APPDIR",
+                "--vendor", "hd-pyy",
+            ))
+        }
     }
-    tasks.named("createDistributable") { dependsOn(stageJarsForJpackage) }
+
+    // 替换默认 createDistributable：把它指向我们自己的 task
+    tasks.named("createDistributable") { dependsOn(packageExe) }
 }
