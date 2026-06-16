@@ -123,6 +123,9 @@ object MediaUrlExtractor {
                     } else {
                         mediaPairs += MediaPair(imageUrl, null, imageUrl, null, false)
                     }
+                    // Java 版兜底逻辑的等价修复：图片 URL 也要进返回值。
+                    // 之前只写 mediaPairs 不写 mediaUrls，导致纯图片笔记返回空 → "No media URLs found"
+                    mediaUrls += imageUrl
                 }
             }
         }
