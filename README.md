@@ -31,6 +31,13 @@ XHS_Downloader_Android/
 
 ## 桌面端使用
 
+### 前置条件
+
+- 本仓库的 Gradle 配置假设系统里有 **JDK 17 或 21**（Kotlin 2.3 + Compose 1.7.3 工具链）。
+  Windows 上最方便的做法是装 [Android Studio](https://developer.android.com/studio)，它自带
+  `C:\Program Files (x86)\Android\openjdk\jdk-17.0.8.101-hotspot`。
+  本仓库 `gradle.properties` 已指向这个路径，`foojay-resolver-convention` 也会在缺失时自动从网络下载。
+
 ### 开发模式
 
 ```bash
@@ -41,13 +48,18 @@ XHS_Downloader_Android/
 ### 打包 .exe / .msi
 
 ```bash
-# 产物在 desktop/build/compose/binaries/main/exe/XHS Downloader.exe
-# 和 msi/XHS Downloader-1.0.0.msi
+# 产物在 desktop/build/compose/binaries/main/app/xhsdn/
+#  入口：xhsdn/xhsdn.exe
 ./gradlew :desktop:createDistributable
 
 # 完整安装包（含 JRE），约 80-120 MB
 ./gradlew :desktop:packageDistribution
 ```
+
+**已知打包问题**：Compose Desktop 1.7.3 在某些环境下，task `createDistributable`
+会清空 `desktop/build/compose/tmp/createDistributable/libs/` 但 jpackage 又从同一目录读 jar，
+导致 `Input length = 1` 失败。`desktop/build.gradle.kts` 末尾的 `stageJarsForJpackage`
+task 已处理这个问题（每次打包前自动从 `build/libs` 复制一份到 staging 目录）。
 
 ### 桌面端默认路径
 - **图片**：`%USERPROFILE%\Pictures\xhsdn\`

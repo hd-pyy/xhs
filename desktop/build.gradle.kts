@@ -46,3 +46,14 @@ compose.desktop {
         }
     }
 }
+
+// Compose Desktop 1.7.3 在打包前会清空 build/compose/tmp/createDistributable/libs/
+// 但后续 jpackage 又从这个目录读 jar，导致 "Input length = 1" 失败。
+// 用 staging task 在 createDistributable 前把 jar 复制进去。
+afterEvaluate {
+    val stageJarsForJpackage = tasks.register<Copy>("stageJarsForJpackage") {
+        from(layout.buildDirectory.dir("libs"))
+        into(layout.buildDirectory.dir("compose/tmp/createDistributable/libs"))
+    }
+    tasks.named("createDistributable") { dependsOn(stageJarsForJpackage) }
+}
