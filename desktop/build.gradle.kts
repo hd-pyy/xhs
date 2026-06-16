@@ -28,6 +28,10 @@ dependencies {
     implementation("org.jetbrains.compose.material3:material3:$composeVersion")
     implementation("org.jetbrains.compose.material:material-icons-extended:$composeVersion")
     implementation("org.jetbrains.compose.desktop:desktop:$composeVersion")
+    // skiko-awt-runtime 负责把 skiko-windows-x64.dll 注入到 classpath；
+    // 否则 Compose 启动时找不到 native 库会抛 LibraryLoadException
+    val skikoVersion = "0.8.18"
+    implementation("org.jetbrains.skiko:skiko-awt-runtime-windows-x64:$skikoVersion")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.11.0")
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
@@ -78,7 +82,7 @@ afterEvaluate {
             val jpackage = File(javaHome, "bin/jpackage.exe")
             require(jpackage.exists()) { "jpackage.exe not found at $jpackage" }
 
-            setExecutable(jpackage.absolutePath as String)
+            setExecutable(jpackage.absolutePath as Any)
             setArgs(listOf(
                 "--input", s.absolutePath,
                 "--runtime-image", runtimeDir.get().asFile.absolutePath,
