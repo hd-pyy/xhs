@@ -35,4 +35,10 @@ interface FileStorage {
 
     /** App 的"视频"目录。 */
     fun videosDir(): String
+
+    /**
+     * 设置图片/视频的根保存目录。null 表示恢复为平台默认。
+     * 仅支持支持用户自定义目录的平台（Desktop）；不支持时返回 false。
+     */
+    fun setBaseDirs(picturesRoot: String?, videosRoot: String?): Boolean = false
 }

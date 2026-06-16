@@ -19,11 +19,22 @@ object PlatformInitializer {
     lateinit var taskManager: TaskManager
         private set
 
+    // 用户自定义保存目录在 Windows 注册表里的 key
+    private const val PREF_PICTURES_DIR = "save.pictures.dir"
+    private const val PREF_VIDEOS_DIR = "save.videos.dir"
+
     fun init() {
+        val kv = DesktopKeyValueStore()
+        val fileStorage = DesktopFileStorage().apply {
+            // 启动时恢复用户之前选过的目录（如果有）
+            kv.getString(PREF_PICTURES_DIR, null)?.let { setPicturesBaseDir(File(it)) }
+            kv.getString(PREF_VIDEOS_DIR, null)?.let { setVideosBaseDir(File(it)) }
+        }
+
         PlatformContext.set(
-            fileStorage = DesktopFileStorage(),
+            fileStorage = fileStorage,
             livePhotoWriter = DesktopLivePhotoWriter,
-            keyValueStore = DesktopKeyValueStore(),
+            keyValueStore = kv,
             appNotifier = DesktopAppNotifier,
             clipboardAccess = DesktopClipboardAccess,
         )
