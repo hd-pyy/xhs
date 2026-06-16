@@ -38,23 +38,19 @@ XHS_Downloader_Android/
   `C:\Program Files (x86)\Android\openjdk\jdk-17.0.8.101-hotspot`。
   本仓库 `gradle.properties` 已指向这个路径，`foojay-resolver-convention` 也会在缺失时自动从网络下载。
 
-### 开发模式
+**⚠️ 不要直接跑 `./gradlew.bat`！** 你的系统 `JAVA_HOME` 指向 JDK 11，
+Gradle 9 起不来。**用仓库根目录的 `run-desktop.ps1`**：
 
-```bash
-# 启动 Windows 桌面 GUI
-./gradlew :desktop:run
-```
-
-### 打包 .exe / .msi
-
-由于 Claude Code 自动模式会拦截触发 `jpackage.exe` 的命令，所以**打包必须在你的 PowerShell 里手动跑**：
+### 开发模式（启动 GUI）
 
 ```powershell
-$env:JAVA_HOME = 'C:\Program Files (x86)\Android\openjdk\jdk-17.0.8.101-hotspot'
-$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+.\run-desktop.ps1 run
+```
 
-cd C:\Users\17651\Desktop\code\XHS_Downloader_Android
-.\gradlew.bat :desktop:createDistributable
+### 打包 .exe
+
+```powershell
+.\run-desktop.ps1 dist
 ```
 
 产物路径：
@@ -63,12 +59,27 @@ cd C:\Users\17651\Desktop\code\XHS_Downloader_Android
 desktop\build\compose\binaries\main\app\xhsdn\xhsdn.exe
 ```
 
-**为什么不用 `./gradlew :desktop:packageDistribution`？** Compose Desktop 1.7.3 的内置
-`createDistributable` 有一个 bug：它会清空 `build/compose/tmp/createDistributable/libs/`
-但 jpackage 又从同一目录读 jar，导致 `Input length = 1` 失败。
-`desktop/build.gradle.kts` 末尾注册了一个自定义 `xhsPackageExe` Exec task 接管这步
-（直接调 `jpackage.exe`，不用 Compose 插件的 staging），并 hook 到
-`createDistributable` 上。所以你只要跑上面那条命令即可。
+### 其它任务
+
+```powershell
+.\run-desktop.ps1 test          # 跑 commonMain 单元测试
+.\run-desktop.ps1 core-desktop  # 只编译 :core 的 desktop target（验证代码最快）
+```
+
+### `run-desktop.ps1` 做了什么
+
+脚本每次执行时先：
+1. 强制设 `JAVA_HOME = C:\Program Files (x86)\Android\openjdk\jdk-17.0.8.101-hotspot`
+2. 把 JDK 17 放到 `PATH` 最前面
+3. `cd` 到仓库根目录
+4. 再调 `gradlew.bat --no-daemon`
+
+这样不管系统默认 `JAVA_HOME` 是什么，Gradle daemon 都能起来。
+
+**Compose Desktop 1.7.3 打包 bug 说明**：内置 `createDistributable` 会清空
+`build/compose/tmp/createDistributable/libs/` 但 jpackage 又从同一目录读 jar，
+导致 `Input length = 1` 失败。`desktop/build.gradle.kts` 末尾的 `xhsPackageExe`
+Exec task 已接管这步（直接调 `jpackage.exe`），你只需跑上面脚本即可。
 
 ### 桌面端默认路径
 - **图片**：`%USERPROFILE%\Pictures\xhsdn\`
