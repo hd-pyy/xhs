@@ -1,10 +1,13 @@
 // XHS Downloader Web 版前端 —— 单文件 vanilla JS。
-// 调用 /api/parse 和 /api/download,把结果渲染到 DOM。
+// 「下载到本机」:解析后对每个 mediaUrl 创建 <a href="/api/fetch?url=..." download>,
+// 浏览器原生下载框依次弹;服务端不落盘。
+// 「存到服务端」:走 /api/download,文件落 web/storage/,前端可浏览历史。
 
 const $ = (id) => document.getElementById(id);
 const textInput = $('text-input');
 const btnParse = $('btn-parse');
 const btnDownload = $('btn-download');
+const btnServer = $('btn-server');
 const btnRefreshHistory = $('btn-refresh-history');
 const statusEl = $('status');
 const resultsSection = $('results-section');
@@ -56,6 +59,7 @@ async function callParse() {
   setStatus('解析中…');
   btnParse.disabled = true;
   btnDownload.disabled = true;
+  btnServer.disabled = true;
   try {
     const res = await fetch('/api/parse', {
       method: 'POST',
@@ -75,6 +79,7 @@ async function callParse() {
   } finally {
     btnParse.disabled = false;
     btnDownload.disabled = false;
+    btnServer.disabled = false;
   }
 }
 
@@ -110,15 +115,94 @@ function renderParseResults(results) {
   resultsSection.hidden = false;
 }
 
+/**
+ * 「下载到本机」:跑一次 /api/parse 拿到所有 mediaUrl + noteId,
+ * 然后循环给每个 URL 创建 <a href="/api/fetch?url=...&name=..." download>,
+ * Chrome 会依次弹原生下载框,每个文件落本机「下载」目录,服务端不落盘。
+ */
 async function callDownload() {
   const text = textInput.value.trim();
   if (!text) {
     setStatus('请先粘贴小红书分享文案或链接', 'error');
     return;
   }
-  setStatus('下载中,请稍候(可能耗时 30s+)…');
+  setStatus('解析并逐个触发下载中…');
   btnParse.disabled = true;
   btnDownload.disabled = true;
+  btnServer.disabled = true;
+  try {
+    const res = await fetch('/api/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      setStatus(json.error ?? '解析失败', 'error');
+      return;
+    }
+    const results = json.results ?? [];
+    // 拍平:每条 note 的每个 mediaUrl 配一个文件名
+    const tasks = [];
+    let counter = 0;
+    for (const note of results) {
+      const postId = note.postId || `note_${++counter}`;
+      for (let i = 0; i < (note.mediaUrls ?? []).length; i++) {
+        const u = note.mediaUrls[i];
+        const ext = inferExt(u);
+        const name = `${postId}_${String(i + 1).padStart(2, '0')}.${ext}`;
+        tasks.push({ url: u, name });
+      }
+    }
+    if (tasks.length === 0) {
+      setStatus('解析后没有任何媒体可下载', 'error');
+      return;
+    }
+
+    setStatus(`正在依次下载 ${tasks.length} 个文件(浏览器会逐个弹框)…`, 'ok');
+    for (let i = 0; i < tasks.length; i++) {
+      const t = tasks[i];
+      const a = document.createElement('a');
+      a.href = `/api/fetch?url=${encodeURIComponent(t.url)}&name=${encodeURIComponent(t.name)}`;
+      a.download = t.name;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // 错开点击,Chrome 不会拦下载;每个之间留 250ms
+      if (i < tasks.length - 1) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    setStatus(`已触发 ${tasks.length} 个文件下载,请在浏览器下载框/下载目录查看`, 'ok');
+  } catch (e) {
+    setStatus('下载异常: ' + (e?.message ?? e), 'error');
+  } finally {
+    btnParse.disabled = false;
+    btnDownload.disabled = false;
+    btnServer.disabled = false;
+  }
+}
+
+function inferExt(url) {
+  const lower = url.toLowerCase();
+  if (lower.includes('.mp4') || lower.includes('masterurl') || lower.includes('stream')) return 'mp4';
+  if (lower.includes('.png')) return 'png';
+  if (lower.includes('.gif')) return 'gif';
+  if (lower.includes('.webp')) return 'webp';
+  return 'jpg';
+}
+
+async function callServerSave() {
+  const text = textInput.value.trim();
+  if (!text) {
+    setStatus('请先粘贴小红书分享文案或链接', 'error');
+    return;
+  }
+  setStatus('存到服务端中,请稍候(可能耗时 30s+)…');
+  btnParse.disabled = true;
+  btnDownload.disabled = true;
+  btnServer.disabled = true;
   try {
     const res = await fetch('/api/download', {
       method: 'POST',
@@ -132,7 +216,7 @@ async function callDownload() {
     }
     renderSavedFiles(json.savedFiles ?? []);
     setStatus(
-      json.ok ? `下载完成:${(json.savedFiles ?? []).length} 个文件` : '下载未成功,请查看控制台',
+      json.ok ? `已落盘 ${(json.savedFiles ?? []).length} 个文件到服务端 web/storage/` : '下载未成功',
       json.ok ? 'ok' : 'error',
     );
     await loadHistory();
@@ -141,6 +225,7 @@ async function callDownload() {
   } finally {
     btnParse.disabled = false;
     btnDownload.disabled = false;
+    btnServer.disabled = false;
   }
 }
 
@@ -206,6 +291,7 @@ async function loadHistory() {
 
 btnParse.addEventListener('click', callParse);
 btnDownload.addEventListener('click', callDownload);
+btnServer.addEventListener('click', callServerSave);
 btnRefreshHistory.addEventListener('click', loadHistory);
 
 loadHistory();

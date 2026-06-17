@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 import { parseRouter } from './routes/parse';
+import { fetchRouter } from './routes/fetch';
 import { buildDownloadRouter } from './routes/download';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -49,6 +50,7 @@ app.use(
 
 // API
 app.use('/api', parseRouter);
+app.use('/api', fetchRouter);
 app.use(
   '/api',
   buildDownloadRouter({

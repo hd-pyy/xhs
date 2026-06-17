@@ -69,6 +69,14 @@ button.primary {
 button.primary:hover:not(:disabled) {
   background: #e51e3b;
 }
+button.secondary {
+  background: #fff;
+  color: #666;
+  border-color: #ddd;
+}
+button.secondary:hover:not(:disabled) {
+  background: #f5f5f5;
+}
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.text-btn { border: none; padding: 4px 8px; color: #ff2442; }
 

@@ -1,56 +1,14 @@
 import { Router } from 'express';
-import { request } from 'undici';
 
 import { extractLinks } from '../core/url/LinkExtractor';
 import { extractPostId } from '../core/url/PostIdExtractor';
 import { parse as parseNoteDetails } from '../core/parse/NoteDetailsParser';
-
-const DEFAULT_UA =
-  'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36 xiaohongshu';
+import { fetchHtml, resolveShortUrl } from '../http/xhsHttp';
 
 export const parseRouter = Router();
 
 interface ParseRequest {
   text?: string;
-}
-
-async function resolveShortUrl(shortUrl: string): Promise<string | null> {
-  try {
-    const res = await request(shortUrl, {
-      method: 'GET',
-      headers: { 'User-Agent': DEFAULT_UA },
-      maxRedirections: 10,
-    });
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      const finalUrl = (res as unknown as { url?: string }).url ?? shortUrl;
-      await res.body.dump();
-      return finalUrl;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchText(url: string): Promise<string | null> {
-  try {
-    const res = await request(url, {
-      method: 'GET',
-      headers: {
-        'User-Agent': DEFAULT_UA,
-        Accept:
-          'text/html,application/xhtml+xml,application/xml;q=1.0,image/avif,image/webp,image/apng,*/*;q=1.0',
-      },
-      maxRedirections: 5,
-    });
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      const html = await res.body.text();
-      return html;
-    }
-    return null;
-  } catch {
-    return null;
-  }
 }
 
 parseRouter.post('/parse', async (req, res) => {
@@ -89,7 +47,7 @@ parseRouter.post('/parse', async (req, res) => {
 
     for (const url of resolved) {
       const postId = extractPostId(url);
-      const html = await fetchText(url);
+      const html = await fetchHtml(url);
       if (!html) {
         out.push({ originalUrl: url, postId, mediaUrls: [], livePhotoPairs: [], error: 'fetch 失败' });
         continue;
