@@ -201,6 +201,21 @@ web/
 
 三端独立发版，Web 版 tag 命名 `v*.*.*-web`。
 
+## 致谢与原作者
+
+本仓库是在原作者 **@NEORUAA（凌风哒哒哒）** 的 Android 项目基础上的衍生/扩展作品：
+
+- 原 Android 项目：[NEORUAA/XHS_Downloader_Android](https://github.com/NEORUAA/XHS_Downloader_Android)
+- 同作者的 iOS 版：[NEORUAA/XHS_Downloader_iOS](https://github.com/NEORUAA/XHS_Downloader_iOS)
+
+本 fork（`hd-pyy/xhs`）在保留原 Android 全部功能的基础上，新增了：
+
+- **KMP 共享层 `:core`** — 把原项目的解析/下载/命名模板抽成 `commonMain`，便于多端复用
+- **Windows 桌面端 `:desktop`** — Jetpack Compose Desktop 包装
+- **Web 版** — Node + Express + undici，1:1 翻译自 `:core/commonMain`
+
+感谢原作者的开源贡献。
+
 ## 开源许可
 
 项目使用 AGPL-3.0 许可协议，要求分发和修改的同时也公开源码，且使用相同的许可协议。
