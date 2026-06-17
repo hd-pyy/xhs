@@ -1,0 +1,26 @@
+{
+  "name": "xhsdn-web",
+  "version": "0.1.0-web",
+  "description": "XHS Downloader Web 版 —— Node + Express 后端,把 :core KMP 解析/下载算法 1:1 翻译成 TypeScript",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "clean": "rimraf dist"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "undici": "^6.19.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.7",
+    "rimraf": "^5.0.5",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.4.5"
+  }
+}

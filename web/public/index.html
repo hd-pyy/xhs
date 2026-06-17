@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>XHS Downloader · Web 版</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>XHS Downloader</h1>
+    <span class="version">v0.1.0-web</span>
+  </header>
+
+  <main>
+    <section class="input-card">
+      <label for="text-input">请粘贴小红书分享文案或链接</label>
+      <textarea
+        id="text-input"
+        rows="4"
+        placeholder="例:✨端午... http://xhslink.com/o/2TuPol0My3z&#10;来【小红书】一探究竟吧！"
+      ></textarea>
+      <div class="actions">
+        <button id="btn-parse" type="button">解析</button>
+        <button id="btn-download" type="button" class="primary">下载</button>
+      </div>
+      <p id="status" class="status"></p>
+    </section>
+
+    <section id="results-section" class="results" hidden>
+      <h2>解析结果</h2>
+      <div id="results"></div>
+    </section>
+
+    <section id="saved-section" class="results" hidden>
+      <h2>本次下载文件</h2>
+      <div id="saved-files"></div>
+    </section>
+
+    <section class="history">
+      <h2>历史</h2>
+      <button id="btn-refresh-history" type="button" class="text-btn">刷新</button>
+      <div id="history-list"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
